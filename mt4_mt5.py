@@ -20,6 +20,10 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # set this env var
 TELEGRAM_CHAT_ID = None  # Will be set when bot receives first message
@@ -98,13 +102,43 @@ RECENTLY_OPENED_COOLDOWN_SEC = (
     10  # Don't reopen same source ticket within this many seconds
 )
 
+
 # --- CONFIG ---
-MT4_FILE_PATH = r"C:\Users\Administrator\AppData\Roaming\MetaQuotes\Terminal\Common\Files\mt4_trades.csv"  # <-- change this
-MT5_LOGIN = 511055954  # <-- your MT5 account number
-MT5_PASSWORD = "eW!p9@a*"  # <-- your MT5 password (or use saved terminal login)
-MT5_SERVER = "FTMO-Server"  # <-- e.g. "ICMarketsSC-Demo"
-POLL_INTERVAL_SEC = 1  # Fallback polling interval if file watching fails
-USE_FILE_WATCHER = True  # Use file system watching instead of polling
+# Helper function to parse environment variables with type conversion
+def get_env(key, default=None, var_type=str):
+    """Get environment variable with type conversion."""
+    value = os.getenv(key, default)
+    if value is None:
+        return None
+    if var_type == bool:
+        return str(value).lower() in ("true", "1", "yes", "on")
+    elif var_type == int:
+        return int(value)
+    elif var_type == float:
+        return float(value)
+    elif var_type == dict:
+        if value == "" or value == "{}":
+            return {}
+        return json.loads(value)
+    elif var_type == list:
+        if value == "" or value == "[]":
+            return []
+        return json.loads(value)
+    return var_type(value)
+
+
+# File paths and MT5 connection settings
+MT4_FILE_PATH = get_env(
+    "MT4_FILE_PATH",
+    r"C:\Users\Administrator\AppData\Roaming\MetaQuotes\Terminal\Common\Files\mt4_trades.csv",
+)
+MT5_LOGIN = get_env("MT5_LOGIN", 511055954, int)
+MT5_PASSWORD = get_env("MT5_PASSWORD", "")
+MT5_SERVER = get_env("MT5_SERVER", "FTMO-Server")
+POLL_INTERVAL_SEC = get_env("POLL_INTERVAL_SEC", 1, int)
+USE_FILE_WATCHER = get_env("USE_FILE_WATCHER", True, bool)
+
+# Internal state variables (not in .env)
 LAST_MT4_TRADES = {}
 LAST_MT4_FILE_MTIME = None  # Track file modification time to avoid unnecessary reads
 SYMBOL_CACHE = {}  # Cache symbol info to avoid repeated MT5 API calls
@@ -113,82 +147,64 @@ _last_error_print_time = 0  # Track when we last printed an error to avoid spam
 # File watcher event for signaling file changes
 file_changed_event = threading.Event()
 file_observer = None
+
+# Symbol mapping and tolerance settings
 # Optional: map MT4 symbols to MT5 symbols if they differ (e.g. "GER40" -> "DE40.cash")
-SYMBOL_MAP = {
-    # "GER40": "DE40.cash",
-}
+# Format: JSON object, e.g. {"GER40": "DE40.cash"}
+SYMBOL_MAP = get_env("SYMBOL_MAP", "{}", dict)
+
 # Price tolerance in points - prevents new entries if current price is too close to SL/TP
-# Format: {symbol: tolerance_in_points}
-PRICE_TOLERANCE = {
-    # "GER40": 5.0,  # Example: no new entries if price is within 5 points of SL or TP
-}
-# Entry price tolerance as absolute price difference - only enter trades if current price is within tolerance of original MT4 entry price
-# Format: {symbol: tolerance_as_absolute_price}
-# For BUY: only enter if original_price - (tolerance * multiplier) <= current_price <= original_price + tolerance
-#   - Upper bound: current_price <= original_price + tolerance (prevents entering at worse prices)
-#   - Lower bound: current_price >= original_price - (tolerance * multiplier) (allows better prices with more tolerance)
-# For SELL: only enter if original_price - tolerance <= current_price <= original_price + (tolerance * multiplier)
-#   - Lower bound: current_price >= original_price - tolerance (prevents entering at worse prices)
-#   - Upper bound: current_price <= original_price + (tolerance * multiplier) (allows better prices with more tolerance)
-ENTRY_PRICE_TOLERANCE = {
-    "GER40.cash": 5.0,  # Example: for BUY, only enter if current price <= original_price + 5.0 (absolute price difference)
-    "EURUSD": 0.0005,  # Example: for SELL, only enter if current price >= original_price - 0.0005 (absolute price difference)
-    "XAUUSD": 3.0,
-    "USJPY": 0.05,
-    "BTCUSD": 200.0,
-    "JP225.cash": 20.0,
-}
-# Multiplier for entry price tolerance on the "better price" side
-# For BUY: allows entering at lower prices (better) with tolerance * multiplier
-# For SELL: allows entering at higher prices (better) with tolerance * multiplier
-# Format: {symbol: multiplier} or use default if not specified
-ENTRY_PRICE_TOLERANCE_BETTER_PRICE_MULTIPLIER = {
-    # "GER40.cash": 2.0,  # Example: for BUY, allow entering if current_price >= original_price - (5.0 * 2.0) = original_price - 10.0
-    # "EURUSD": 2.0,  # Example: for SELL, allow entering if current_price <= original_price + (0.0005 * 2.0) = original_price + 0.001
-}
-ENTRY_PRICE_TOLERANCE_BETTER_PRICE_MULTIPLIER_DEFAULT = (
-    2.0  # Default multiplier if not specified per symbol
+# Format: JSON object, e.g. {"GER40": 5.0}
+PRICE_TOLERANCE = get_env("PRICE_TOLERANCE", "{}", dict)
+
+# Entry price tolerance as absolute price difference
+# Format: JSON object, e.g. {"GER40.cash": 5.0, "EURUSD": 0.0005}
+ENTRY_PRICE_TOLERANCE = get_env(
+    "ENTRY_PRICE_TOLERANCE",
+    '{"GER40.cash": 5.0, "EURUSD": 0.0005, "XAUUSD": 3.0, "USJPY": 0.05, "BTCUSD": 200.0, "JP225.cash": 20.0}',
+    dict,
 )
 
-# Enable limit orders when entry price tolerance is not met
-# If True, when entry tolerance check fails, a limit order will be placed at the original MT4 entry price
-# The limit order will be cancelled when the MT4 trade closes
-USE_LIMIT_ORDERS_ON_TOLERANCE_FAIL = False  # Set to True to enable limit orders
-# Secondary limit order settings - places a limit order between entry price and SL
-# If enabled, a secondary limit order will be placed when a trade is opened
-# The order will be placed at a percentage of the distance between entry and SL
-# Example: 50% lots at 50% distance means if entry=100, SL=98, order placed at 99 with 50% of lots
-USE_SECONDARY_LIMIT_ORDER = False  # Set to True to enable secondary limit orders
-SECONDARY_LIMIT_ORDER_LOT_PERCENTAGE = 0.5  # Percentage of original lots (0.5 = 50%)
-SECONDARY_LIMIT_ORDER_DISTANCE_PERCENTAGE = (
-    0.5  # Percentage of distance between entry and SL (0.5 = 50%)
+# Multiplier for entry price tolerance on the "better price" side
+# Format: JSON object, e.g. {"GER40.cash": 2.0}
+ENTRY_PRICE_TOLERANCE_BETTER_PRICE_MULTIPLIER = get_env(
+    "ENTRY_PRICE_TOLERANCE_BETTER_PRICE_MULTIPLIER", "{}", dict
 )
-# --- Helper functions ---
-# Example: 2.0 means all positions will be doubled
-GLOBAL_LOT_MULTIPLIER = 1.0  # Global lot multiplier (applies to all trades)
-# Lot size multiplier - multiplies the lot size when copying trades
-# Format: {symbol: multiplier}
-# Example: {"GER40": 2.0} means 1.0 lot becomes 2.0 lots
-LOT_MULTIPLIER = {
-    # "GER40": 2.0,  # Example: double the lot size for GER40
-}
-# Magic number lot multiplier - multiplies lot size based on magic number
-# Format: {magic_number: multiplier}
-# Example: {123456: 1.5} means trades with magic 123456 get 1.5x lot size
-# If global, symbol, and magic multipliers all exist, they multiply together
-MAGIC_LOT_MULTIPLIER = {
-    # 123456: 1.5,  # Example: 1.5x multiplier for magic 123456
-    # 789012: 0.5,  # Example: 0.5x multiplier for magic 789012
-}
+ENTRY_PRICE_TOLERANCE_BETTER_PRICE_MULTIPLIER_DEFAULT = get_env(
+    "ENTRY_PRICE_TOLERANCE_BETTER_PRICE_MULTIPLIER_DEFAULT", 2.0, float
+)
+
+# Limit order settings
+USE_LIMIT_ORDERS_ON_TOLERANCE_FAIL = get_env(
+    "USE_LIMIT_ORDERS_ON_TOLERANCE_FAIL", False, bool
+)
+USE_SECONDARY_LIMIT_ORDER = get_env("USE_SECONDARY_LIMIT_ORDER", False, bool)
+SECONDARY_LIMIT_ORDER_LOT_PERCENTAGE = get_env(
+    "SECONDARY_LIMIT_ORDER_LOT_PERCENTAGE", 0.5, float
+)
+SECONDARY_LIMIT_ORDER_DISTANCE_PERCENTAGE = get_env(
+    "SECONDARY_LIMIT_ORDER_DISTANCE_PERCENTAGE", 0.5, float
+)
+
+# Lot multiplier settings
+GLOBAL_LOT_MULTIPLIER = get_env("GLOBAL_LOT_MULTIPLIER", 1.0, float)
+# Format: JSON object, e.g. {"GER40": 2.0}
+LOT_MULTIPLIER = get_env("LOT_MULTIPLIER", "{}", dict)
+# Format: JSON object with string keys, e.g. {"123456": 1.5, "789012": 0.5}
+# Note: JSON keys must be strings, we'll convert to int when using
+MAGIC_LOT_MULTIPLIER_JSON = get_env("MAGIC_LOT_MULTIPLIER", "{}", dict)
+MAGIC_LOT_MULTIPLIER = (
+    {int(k): v for k, v in MAGIC_LOT_MULTIPLIER_JSON.items()}
+    if MAGIC_LOT_MULTIPLIER_JSON
+    else {}
+)
+
 # Magic number filter - only copy trades with these magic numbers
-# If empty list, all magic numbers are copied
-# Format: [magic1, magic2, ...]
-MAGIC_FILTER = [
-    # 123456,  # Example: only copy trades with magic number 123456
-    # 789012,  # Add more magic numbers to filter
-]
+# Format: JSON array, e.g. [123456, 789012]
+MAGIC_FILTER = get_env("MAGIC_FILTER", "[]", list)
+
 # Telegram notification settings
-TELEGRAM_ENABLED = True  # Telegram is enabled by default if BOT_TOKEN is set
+TELEGRAM_ENABLED = get_env("TELEGRAM_ENABLED", True, bool)
 # --- Helper functions ---
 
 
@@ -253,7 +269,12 @@ def apply_config(config):
     if "LOT_MULTIPLIER" in config:
         LOT_MULTIPLIER = dict(config["LOT_MULTIPLIER"])
     if "MAGIC_LOT_MULTIPLIER" in config:
-        MAGIC_LOT_MULTIPLIER = dict(config["MAGIC_LOT_MULTIPLIER"])
+        # Convert string keys to int keys for magic number multipliers
+        magic_mult = config["MAGIC_LOT_MULTIPLIER"]
+        if isinstance(magic_mult, dict):
+            MAGIC_LOT_MULTIPLIER = {int(k): v for k, v in magic_mult.items()}
+        else:
+            MAGIC_LOT_MULTIPLIER = {}
     if "MAGIC_FILTER" in config:
         # Expect list of ints
         MAGIC_FILTER[:] = [int(m) for m in config["MAGIC_FILTER"]]

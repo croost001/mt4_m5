@@ -1,0 +1,11 @@
+# MetaTrader5 - Install separately
+# The MetaTrader5 Python package comes with the MetaTrader5 terminal installation
+# If you have MT5 installed, the package should be available in your Python environment
+# If not, you may need to install it manually or use the MT5 terminal's Python environment
+# For more info: https://www.metatrader5.com/en/automated-trading/metaquotes-language5
+
+requests
+python-telegram-bot
+watchdog
+python-dotenv
+
